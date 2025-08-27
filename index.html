@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Live Body Part Tracking Overlay</title>
+  <style>
+    :root {
+      --bg: #0b0f14;
+      --fg: #e8eff7;
+      --accent: #5dd3ff;
+      --accent2: #ff7aa2;
+      --muted: #93a4b3;
+    }
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+    }
+    header {
+      padding: 16px 20px;
+      border-bottom: 1px solid #16202a;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+    header h1 {
+      font-size: 18px;
+      margin: 0;
+    }
+    header .meta {
+      color: var(--muted);
+      font-size: 13px;
+    }
+    main {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 12px;
+      padding: 12px;
+    }
+    .stage {
+      position: relative;
+      max-width: 1200px;
+      margin: 0 auto;
+      background: #0f151c;
+      border: 1px solid #182533;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .video-wrap {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      background: #0a0e13;
+    }
+    video, canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    video {
+      transform: scaleX(-1); /* mirror for user-friendly view */
+      filter: saturate(1.05) contrast(1.05);
+    }
+    canvas {
+      pointer-events: none;
+    }
+    .controls {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      padding: 10px 12px;
+      border-top: 1px solid #182533;
+      background: #0d131a;
+      flex-wrap: wrap;
+    }
+    .controls button, .controls select {
+      background: #0f1a24;
+      color: var(--fg);
+      border: 1px solid #1f3142;
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    .controls button:hover, .controls select:hover {
+      border-color: #2a445c;
+    }
+    .chip {
+      font-size: 12px;
+      color: var(--muted);
+      padding: 6px 8px;
+      border: 1px solid #1f3142;
+      border-radius: 8px;
+    }
+    .legend {
+      display: flex;
+      gap: 12px;
+      padding: 0 12px 12px;
+      color: var(--muted);
+      font-size: 12px;
+      flex-wrap: wrap;
+    }
+    .legend .dot {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      margin-right: 6px;
+    }
+    .row {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+    footer {
+      padding: 10px 16px 24px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Live Body Part Tracking Overlay</h1>
+    <div class="meta">Face + Hands + Pose landmarks (runs in your browser)</div>
+  </header>
+
+  <main>
+    <section class="stage" aria-label="Camera preview and overlay">
+      <div class="video-wrap">
+        <video id="video" playsinline autoplay muted></video>
+        <canvas id="overlay"></canvas>
+      </div>
+      <div class="controls">
+        <button id="btnStart">Start camera</button>
+        <button id="btnStop" disabled>Stop</button>
+        <div class="row">
+          <label for="selCam" class="chip">Camera</label>
+          <select id="selCam"></select>
+        </div>
+        <div class="row">
+          <label for="selQuality" class="chip">Quality</label>
+          <select id="selQuality">
+            <option value="0">Fast</option>
+            <option value="1" selected>Balanced</option>
+            <option value="2">Detailed</option>
+          </select>
+        </div>
+        <div class="chip" id="fps">FPS: —</div>
+        <div class="chip" id="status">Status: idle</div>
+      </div>
+      <div class="legend">
+        <span><span class="dot" style="background:#5dd3ff"></span>Pose</span>
+        <span><span class="dot" style="background:#ff7aa2"></span>Hands</span>
+        <span><span class="dot" style="background:#9d7bff"></span>Face mesh</span>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    Make sure you’re on HTTPS (GitHub Pages is fine) and grant camera permission.
+  </footer>
+
+  <!-- MediaPipe libraries (Holistic + drawing + camera utils) -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic/holistic.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+  <script>
+    (() => {
+      const videoEl = document.getElementById('video');
+      const canvasEl = document.getElementById('overlay');
+      const ctx = canvasEl.getContext('2d');
+
+      const btnStart = document.getElementById('btnStart');
+      const btnStop = document.getElementById('btnStop');
+      const selCam = document.getElementById('selCam');
+      const selQuality = document.getElementById('selQuality');
+      const statusEl = document.getElementById('status');
+      const fpsEl = document.getElementById('fps');
+
+      let camera = null;
+      let holistic = null;
+      let stream = null;
+      let running = false;
+      let lastTime = performance.now();
+      let frames = 0;
+
+      function setStatus(text) {
+        statusEl.textContent = 'Status: ' + text;
+      }
+
+      function updateFPS() {
+        frames++;
+        const now = performance.now();
+        if (now - lastTime >= 1000) {
+          fpsEl.textContent = 'FPS: ' + frames;
+          frames = 0;
+          lastTime = now;
+        }
+      }
+
+      function resizeCanvas() {
+        const rect = video
